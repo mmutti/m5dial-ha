@@ -125,7 +125,9 @@ int encoderAccumulator = 0;
 // Touch keypad layout: 3x3 number grid with CLR on left and OK on right as tall buttons
 // Keys: 1,2,3 / 4,5,6 / 7,8,9 / 0 (center bottom)
 // CLR = index 10, OK = index 11 (special tall buttons on sides)
-const char keypadChars[12] = {'1','2','3','4','5','6','7','8','9','0','C','>'};
+const char keypadCharsDefault[12] = {'1','2','3','4','5','6','7','8','9','0','C','>'};
+char keypadChars[12] = {'1','2','3','4','5','6','7','8','9','0','C','>'};
+int keypadMapping[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};  // Maps position to digit index
 #define KEYPAD_ROWS 4
 #define KEYPAD_COLS 3
 #define KEY_WIDTH 50
@@ -149,6 +151,14 @@ unsigned long wifiConnectStart = 0;
 // NTP sync state
 bool ntpSynced = false;
 
+// Animation state
+unsigned long animationStartTime = 0;
+
+// Alarm buzzer state
+bool alarmBuzzerActive = false;
+unsigned long lastBuzzerToggle = 0;
+bool buzzerState = false;
+
 // Long press detection
 #define LONG_PRESS_MS 1000
 unsigned long btnPressStart = 0;
@@ -169,6 +179,9 @@ void connectMqtt();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void setRtcFromCompileTime();
 void syncRtcFromNtp();
+void shuffleKeypad();
+void playAlarmBuzzer();
+void stopAlarmBuzzer();
 
 void setup() {
     Serial.begin(115200);
@@ -253,6 +266,20 @@ void loop() {
         // Check if NTP time is available and sync RTC
         if (!ntpSynced) {
             syncRtcFromNtp();
+        }
+    }
+    
+    // Handle alarm buzzer
+    if (haAlarmState == "triggered") {
+        if (!alarmBuzzerActive) {
+            alarmBuzzerActive = true;
+            lastBuzzerToggle = millis();
+            buzzerState = true;
+        }
+        playAlarmBuzzer();
+    } else {
+        if (alarmBuzzerActive) {
+            stopAlarmBuzzer();
         }
     }
     
@@ -390,6 +417,7 @@ void handleButton() {
                     codeLength = 0;
                     enteredCode[0] = '\0';
                     selectedKey = 5;
+                    shuffleKeypad();
                 }
                 break;
                 
@@ -522,6 +550,7 @@ void handleTouch() {
             codeLength = 0;
             enteredCode[0] = '\0';
             selectedKey = 5;
+            shuffleKeypad();
         } else {
             // Alarm is disarmed - arm directly without code
             if (mqttClient.connected()) {
@@ -562,16 +591,26 @@ void submitCode() {
     // Send the code to Home Assistant
     // The code is typically used for arming/disarming
     bool isArmed = (haAlarmState == "armed_away" || haAlarmState == "armed_home" || 
-                    haAlarmState == "armed_night");
+                    haAlarmState == "armed_night" || haAlarmState == "triggered");
+    
+    if (isArmed) {
+        // Validate PIN before disarming
+        if (strcmp(enteredCode, HA_ALARM_PIN) != 0) {
+            // Wrong PIN - play error tone and clear
+            Serial.printf("Wrong PIN entered: %s\n", enteredCode);
+            M5Dial.Speaker.tone(200, 500);  // Low error tone
+            codeLength = 0;
+            enteredCode[0] = '\0';
+            return;  // Stay on keypad screen
+        }
+    }
     
     if (mqttClient.connected()) {
         // Build command with code
         String command = isArmed ? "DISARM" : "ARM_AWAY";
-        // Some HA alarm panels expect code in a separate field or as JSON
-        // Adjust based on your HA configuration
         if (mqttClient.publish(HA_MQTT_COMMAND_TOPIC, command.c_str())) {
             Serial.printf("Sent: %s (code: %s)\n", command.c_str(), enteredCode);
-            M5Dial.Speaker.tone(1000, 100);
+            M5Dial.Speaker.tone(1000, 100);  // Success tone
         }
     }
     
@@ -762,10 +801,13 @@ void drawMainScreen() {
     // Draw circular background for alarm state
     uint16_t stateColor = COLOR_DIM;
     String stateText = haAlarmState;
+    bool isArmedState = false;
+    bool isTriggeredState = false;
     
     if (haAlarmState == "armed_away" || haAlarmState == "armed_home" || haAlarmState == "armed_night") {
         stateColor = COLOR_ARMED;
         stateText = "ARMED";
+        isArmedState = true;
     } else if (haAlarmState == "disarmed") {
         stateColor = COLOR_DISARMED;
         stateText = "DISARMED";
@@ -774,14 +816,38 @@ void drawMainScreen() {
         stateText = "PENDING";
     } else if (haAlarmState == "triggered") {
         stateColor = COLOR_ERROR;
-        stateText = "TRIGGERED!";
+        stateText = "TRIGGERED";
+        isTriggeredState = true;
     }
     
-    // Draw state circle
-    canvas.drawCircle(CENTER_X, CENTER_Y, 60, stateColor);
-    canvas.drawCircle(CENTER_X, CENTER_Y, 61, stateColor);
+    // Calculate animated color for circle only (not text)
+    // Sleeping man breathing: ~12-20 breaths/min = 0.2-0.33 Hz, use 5 second cycle (0.2 Hz)
+    // Running man breathing: ~40-60 breaths/min = 0.67-1 Hz, use 400ms cycle (2.5 Hz)
+    uint16_t circleColor = stateColor;
+    if (isArmedState || isTriggeredState) {
+        unsigned long now = millis();
+        float brightness;
+        
+        if (isTriggeredState) {
+            // Fast pulsing for triggered state (400ms cycle = 2.5 Hz)
+            float phase = (now % 400) / 400.0f;
+            brightness = 0.5f + 0.5f * sin(phase * 2.0f * PI);
+        } else {
+            // Slow breathing for armed state (5000ms cycle = 0.2 Hz)
+            float phase = (now % 5000) / 5000.0f;
+            brightness = 0.5f + 0.5f * sin(phase * 2.0f * PI);
+        }
+        
+        // Scale red component from 0 to full red (0xF800)
+        uint8_t r = (uint8_t)(31 * brightness);  // 5 bits for red in RGB565
+        circleColor = (r << 11);  // RGB565: RRRRR GGGGGG BBBBB
+    }
     
-    // State text
+    // Draw state circle (animated)
+    canvas.drawCircle(CENTER_X, CENTER_Y, 60, circleColor);
+    canvas.drawCircle(CENTER_X, CENTER_Y, 61, circleColor);
+    
+    // State text (static color, not animated)
     canvas.setTextColor(stateColor);
     canvas.setTextSize(2);
     canvas.drawString(stateText, CENTER_X, CENTER_Y);
@@ -789,8 +855,15 @@ void drawMainScreen() {
     
     // Sensor summary below center
     int openCount = 0;
+    String openSensorNames = "";
     for (int i = 0; i < HA_SENSOR_COUNT; i++) {
-        if (haSensorOpen[i]) openCount++;
+        if (haSensorOpen[i]) {
+            openCount++;
+            if (openSensorNames.length() > 0) {
+                openSensorNames += ", ";
+            }
+            openSensorNames += haSensorNames[i];
+        }
     }
     
     canvas.setTextDatum(middle_center);
@@ -799,9 +872,27 @@ void drawMainScreen() {
         canvas.drawString("All closed", CENTER_X, CENTER_Y + 45);
     } else {
         canvas.setTextColor(COLOR_ERROR);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%d open", openCount);
-        canvas.drawString(buf, CENTER_X, CENTER_Y + 45);
+        // Show sensor names when triggered, otherwise show count
+        if (isTriggeredState && openCount <= 2) {
+            // Show names if 1-2 sensors open (fits on screen)
+            canvas.drawString(openSensorNames, CENTER_X, CENTER_Y + 45);
+        } else if (isTriggeredState) {
+            // Too many open, show first name + count
+            String firstOpen = "";
+            for (int i = 0; i < HA_SENSOR_COUNT; i++) {
+                if (haSensorOpen[i]) {
+                    firstOpen = haSensorNames[i];
+                    break;
+                }
+            }
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%s +%d", firstOpen.c_str(), openCount - 1);
+            canvas.drawString(buf, CENTER_X, CENTER_Y + 45);
+        } else {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d open", openCount);
+            canvas.drawString(buf, CENTER_X, CENTER_Y + 45);
+        }
     }
 }
 
@@ -1077,7 +1168,7 @@ void syncRtcFromNtp() {
     // Add UTC+1 offset for CET (Italy winter time)
     now += 3600;  // Add 1 hour in seconds
     
-    struct tm* timeinfo = localtime(&now);
+    struct tm* timeinfo = gmtime(&now);
     
     // NTP time obtained successfully - update RTC
     m5::rtc_datetime_t newDt;
@@ -1094,4 +1185,50 @@ void syncRtcFromNtp() {
     Serial.printf("RTC synced from NTP: %04d-%02d-%02d %02d:%02d:%02d\n",
                   newDt.date.year, newDt.date.month, newDt.date.date,
                   newDt.time.hours, newDt.time.minutes, newDt.time.seconds);
+}
+
+// Shuffle the keypad numbers randomly (Fisher-Yates shuffle)
+void shuffleKeypad() {
+    // Reset to default first
+    for (int i = 0; i < 12; i++) {
+        keypadChars[i] = keypadCharsDefault[i];
+    }
+    
+    // Shuffle only the digits (indices 0-9), keep CLR and OK in place
+    for (int i = 9; i > 0; i--) {
+        int j = random(0, i + 1);
+        // Swap keypadChars[i] and keypadChars[j]
+        char temp = keypadChars[i];
+        keypadChars[i] = keypadChars[j];
+        keypadChars[j] = temp;
+    }
+    
+    Serial.print("Keypad shuffled: ");
+    for (int i = 0; i < 10; i++) {
+        Serial.print(keypadChars[i]);
+    }
+    Serial.println();
+}
+
+// Play alarm buzzer tone (alternating high-low siren)
+void playAlarmBuzzer() {
+    unsigned long now = millis();
+    
+    // Toggle between two frequencies every 800ms for slower siren effect
+    if (now - lastBuzzerToggle >= 800) {
+        lastBuzzerToggle = now;
+        buzzerState = !buzzerState;
+        
+        if (buzzerState) {
+            M5Dial.Speaker.tone(800, 800);   // High tone, longer duration
+        } else {
+            M5Dial.Speaker.tone(500, 800);   // Low tone, longer duration
+        }
+    }
+}
+
+// Stop alarm buzzer
+void stopAlarmBuzzer() {
+    alarmBuzzerActive = false;
+    M5Dial.Speaker.stop();
 }
