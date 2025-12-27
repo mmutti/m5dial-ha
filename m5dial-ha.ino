@@ -237,8 +237,8 @@ void loop() {
             Serial.println(WiFi.localIP());
             
             // Sync RTC from NTP (will be checked in loop)
-            // Use 0 offset - getLocalTime returns UTC, we add offset in syncRtcFromNtp
-            configTime(0, 0, "pool.ntp.org", "time.google.com");
+            // Set timezone for Italy: CET-1 means UTC+1 (POSIX sign is inverted)
+            configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.google.com");
             ntpSynced = false;
             
             // Connect to MQTT
@@ -1165,19 +1165,20 @@ void syncRtcFromNtp() {
         return;
     }
     
-    // Add UTC+1 offset for CET (Italy winter time)
-    now += 3600;  // Add 1 hour in seconds
-    
-    struct tm* timeinfo = gmtime(&now);
+    // Use localtime to get local time with timezone applied
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 1000)) {
+        return;  // NTP not ready yet
+    }
     
     // NTP time obtained successfully - update RTC
     m5::rtc_datetime_t newDt;
-    newDt.date.year = timeinfo->tm_year + 1900;
-    newDt.date.month = timeinfo->tm_mon + 1;
-    newDt.date.date = timeinfo->tm_mday;
-    newDt.time.hours = timeinfo->tm_hour;
-    newDt.time.minutes = timeinfo->tm_min;
-    newDt.time.seconds = timeinfo->tm_sec;
+    newDt.date.year = timeinfo.tm_year + 1900;
+    newDt.date.month = timeinfo.tm_mon + 1;
+    newDt.date.date = timeinfo.tm_mday;
+    newDt.time.hours = timeinfo.tm_hour;
+    newDt.time.minutes = timeinfo.tm_min;
+    newDt.time.seconds = timeinfo.tm_sec;
     
     M5Dial.Rtc.setDateTime(newDt);
     ntpSynced = true;
