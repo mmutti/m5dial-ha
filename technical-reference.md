@@ -1,23 +1,25 @@
-# M5StickC Plus Tricorder - Technical Reference
+# M5Dial Home Assistant Controller - Technical Reference
 
 ## Architecture Overview
 
-The firmware follows a modular app-based architecture with:
-- **App System**: Enum-based app identification with state machine
-- **Sensor Abstraction**: Auto-detection at boot with enable/disable flags
-- **Display Management**: Double-buffered sprite rendering
-- **Input Handling**: Unified button and encoder input with long-press detection
+The firmware follows a screen-based architecture with:
+- **Screen System**: Enum-based screen identification with state machine
+- **MQTT Integration**: PubSubClient for Home Assistant communication
+- **Display Management**: Double-buffered sprite rendering (M5Canvas)
+- **Input Handling**: Unified touch, encoder, and button input with long-press detection
 
 ---
 
 ## File Structure
 
 ```
-m5stick-c-tricorder/
-├── m5stick-c-tricorder.ino   # Main firmware source
-├── README.md                  # Project overview
-├── manual.md                  # User manual
-└── technical-reference.md     # This file
+m5dial-ha/
+├── m5dial-ha.ino             # Main firmware source
+├── credentials.h             # WiFi and MQTT credentials (gitignored)
+├── credentials.h.example     # Template for credentials
+├── README.md                 # Project overview
+├── manual.md                 # User manual
+└── technical-reference.md    # This file
 ```
 
 ---
@@ -26,117 +28,126 @@ m5stick-c-tricorder/
 
 | Library | Version | Purpose |
 |---------|---------|----------|
-| M5StickCPlus | 0.1.1+ | Hardware abstraction |
-| SensirionI2cScd4x | 1.1.0+ | CO2 sensor driver |
-| BME68x Sensor library | 1.3+ | BME688 sensor driver (ENV Pro) |
-| BSEC2 Software Library | 1.10+ | Bosch IAQ algorithm (ENV Pro) |
-| Adafruit MLX90614 | 2.1.5+ | NCIR temperature sensor |
-| SparkFun MAX3010x | Latest | Heart rate sensor |
-| VL53L0X (pololu) | Latest | TOF distance sensor |
-| UNIT_MINISCALE | 0.0.1+ | MiniScale weight sensor |
-| SunSet | Latest | Solar position calculations |
-| Wire | Built-in | I2C communication |
+| M5Dial | Latest | Hardware abstraction (display, encoder, touch, RTC) |
+| PubSubClient | 2.8+ | MQTT client |
+| WiFi | Built-in | WiFi connectivity |
 | Preferences | Built-in | Flash storage |
-| WiFi | Built-in | NTP time sync |
 
 ---
 
 ## Constants and Definitions
 
-### GPIO Pins
+### Display Constants
 
 ```cpp
-#define BUZZER_PIN 2
-#define LED_PIN 10
-#define PIR_PIN 33
-#define IR_SEND_PIN 9
-#define IR_RECEIVE_PIN 36
-// Encoder I2C: GPIO 0 (SDA), 26 (SCL)
-// Grove Port: GPIO 32 (SDA), 33 (SCL)
+#define SCREEN_WIDTH 240
+#define SCREEN_HEIGHT 240
+#define CENTER_X 120
+#define CENTER_Y 120
 ```
 
-### I2C Addresses
+### Colors
 
 ```cpp
-#define MINIENCODERC_ADDR 0x42
-#define SCD4X_I2C_ADDR 0x62
-#define BME68X_I2C_ADDR_HIGH 0x77  // ENV Pro (SDO high)
-#define BME68X_I2C_ADDR_LOW 0x76   // ENV Pro (SDO low)
-#define MLX90614_I2C_ADDR 0x5A
-#define MAX30102_I2C_ADDR 0x57
-#define VL53L0X_I2C_ADDR 0x29
-#define MINISCALE_I2C_ADDR 0x26
+#define COLOR_BG        0x0000  // Black
+#define COLOR_TEXT      0xFFFF  // White
+#define COLOR_ACCENT    0x07FF  // Cyan
+#define COLOR_OK        0x03E0  // Dark green
+#define COLOR_WARN      0xFFE0  // Yellow
+#define COLOR_ERROR     0xF800  // Red
+#define COLOR_DIM       0x7BEF  // Gray
+#define COLOR_ARMED     0xF800  // Red
+#define COLOR_DISARMED  0x03E0  // Dark green
+#define COLOR_ORANGE    0xC260  // Dark orange (menu highlight)
+```
+
+### Keypad Layout
+
+```cpp
+#define KEYPAD_ROWS 4
+#define KEYPAD_COLS 3
+#define KEY_WIDTH 50
+#define KEY_HEIGHT 38
+#define KEYPAD_START_X 45
+#define KEYPAD_START_Y 70
+#define SIDE_BTN_WIDTH 15
+#define SIDE_BTN_HEIGHT (KEY_HEIGHT * 3 + 6)
 ```
 
 ### Timing Constants
 
 ```cpp
-#define LONG_PRESS_MS 500
-#define SAMPLE_INTERVAL_MS 600000      // 10 min (CO2 history)
-#define HR_SAMPLE_INTERVAL_MS 300000   // 5 min (HR history)
-#define SAVE_INTERVAL_MS 600000        // Flash save interval
+#define LONG_PRESS_MS 1000
+#define WIFI_TIMEOUT_MS 15000
+#define MQTT_RECONNECT_INTERVAL 5000
 ```
 
-### History Buffers
+### MQTT Topics
 
 ```cpp
-#define HISTORY_SIZE 144       // 24h @ 10min intervals
-#define HR_HISTORY_SIZE 144    // 12h @ 5min intervals
+#define HA_MQTT_COMMAND_TOPIC "home/alarm/set"
+#define HA_MQTT_STATE_TOPIC "home/alarm"
+#define HA_MQTT_STATUS_TOPIC "home/alarm/status"
 ```
 
 ---
 
 ## Data Structures
 
-### App System
+### Screen System
 
 ```cpp
-enum AppState { APP_RUNNING, APP_MENU };
-enum AppID { 
-    APP_AIR_QUALITY, 
-    APP_STOPWATCH, 
-    APP_TIMER, 
-    APP_MOTION, 
-    APP_NCIR, 
-    APP_HEARTRATE, 
-    APP_IR_REMOTE,
-    APP_LEVEL,
-    APP_DISTANCE,
-    APP_TOF_COUNTER,
-    APP_SCALE,
-    APP_WEB_FILES,
-    APP_SUN_MOON,
-    APP_HOME_ASSISTANT,
-    APP_SETTINGS,
-    APP_POWER_OFF,
-    APP_COUNT 
+enum AppScreen {
+    SCREEN_MAIN,      // Main status screen
+    SCREEN_KEYPAD,    // Keypad for code entry
+    SCREEN_SENSORS,   // Sensor status list
+    SCREEN_SETTINGS   // RTC settings
 };
 
-const char* appNames[];        // Display names
-bool appEnabled[APP_COUNT];    // Detection flags
+#define MENU_COUNT 3
+const char* menuNames[MENU_COUNT] = {"KEYPAD", "SENSORS", "SETTINGS"};
+const AppScreen menuScreens[MENU_COUNT] = {SCREEN_KEYPAD, SCREEN_SENSORS, SCREEN_SETTINGS};
 ```
 
-### Timer States
+### Settings Fields
 
 ```cpp
-enum TimerState { 
-    TIMER_SETTING,    // Adjusting time
-    TIMER_RUNNING,    // Counting down
-    TIMER_PAUSED,     // Paused
-    TIMER_FINISHED    // Alarm playing
+enum SettingsField { 
+    SET_HOUR, 
+    SET_MIN, 
+    SET_DAY, 
+    SET_MONTH, 
+    SET_YEAR, 
+    SET_FIELD_COUNT 
 };
 ```
 
-### History Storage
+### Connection States
 
 ```cpp
-// CO2/Temperature history (24h)
-uint16_t co2_history[HISTORY_SIZE];
-int16_t temp_history[HISTORY_SIZE];    // temp * 10
-uint8_t hum_history[HISTORY_SIZE];
+enum ConnState { 
+    CONN_DISCONNECTED, 
+    CONN_CONNECTING, 
+    CONN_CONNECTED, 
+    CONN_ERROR 
+};
+```
 
-// Heart rate history (12h)
-uint8_t hr_history[HR_HISTORY_SIZE];
+### Sensor Configuration
+
+```cpp
+#define HA_SENSOR_COUNT 11
+const char* haSensorTopics[HA_SENSOR_COUNT] = {
+    "home-assistant/porta_ingresso/contact",
+    "home-assistant/portafinestra_cucina/contact",
+    // ... more sensors
+};
+const char* haSensorNames[HA_SENSOR_COUNT] = {
+    "Porta ingresso",
+    "PF cucina",
+    // ... more names
+};
+bool haSensorOpen[HA_SENSOR_COUNT] = {false};
 ```
 
 ---
@@ -148,569 +159,233 @@ uint8_t hr_history[HR_HISTORY_SIZE];
 ```cpp
 void setup()
 ```
-1. Initialize M5StickC Plus hardware
-2. Initialize buzzer (LEDC PWM)
-3. Initialize encoder on Wire bus
-4. Initialize PIR pin
-5. Scan I2C for sensors and enable apps
-6. Set default app based on detected sensors
-7. Initialize CO2 sensor
-8. Setup display sprite
-9. Sync time via WiFi/NTP
-10. Load history from flash
+1. Initialize serial (115200 baud)
+2. Initialize M5Dial with encoder enabled, RFID disabled
+3. Configure display rotation and create sprite
+4. Show startup message
+5. Initialize Preferences for RTC sync
+6. Set RTC from compile time if not already set
+7. Initialize encoder tracking
+8. Start WiFi connection
+9. Configure MQTT client
 
 ### Main Loop
 
 ```cpp
 void loop()
 ```
-1. Update M5 button states
-2. Read CO2 sensor (if available)
-3. Handle app input
-4. Render current app
-5. Periodic history sampling
-6. Periodic flash saves
-
-### Sensor Detection
-
-```cpp
-// In setup(), for each sensor:
-Wire.beginTransmission(ADDR);
-if (Wire.endTransmission() == 0) {
-    // Sensor found, initialize and enable app
-    appEnabled[APP_X] = true;
-}
-```
-
-### Input Handling
-
-```cpp
-void handleAppInput()
-```
-- Reads encoder value and button states
-- Detects short press vs long press
-- Routes input to current app or menu
-- Long press always opens menu
-
-### Rendering
-
-```cpp
-void renderCurrentApp()
-```
-- Clears sprite buffer
-- Calls appropriate app function
-- Pushes sprite to display
-
----
-
-## App Implementation Pattern
-
-Each app follows this structure:
-
-```cpp
-void app_example() {
-    tftSprite.fillRect(0, 0, 135, 240, BLACK);
-    drawHeader();
-    
-    // Title
-    tftSprite.setTextColor(CYAN);
-    tftSprite.drawString("APP NAME", x, 20);
-    
-    // Sensor reading (if applicable)
-    // ...
-    
-    // Display data
-    // ...
-    
-    // History graph (if applicable)
-    // ...
-    
-    // Controls hint
-    tftSprite.setTextColor(0x7BEF);
-    tftSprite.drawString("[HOLD] Menu", 35, 180);
-    
-    tftSprite.pushSprite(0, 0);
-}
-```
-
----
-
-## Buzzer/Melody System
-
-### PWM Configuration
-
-```cpp
-void buzzerInit() {
-    ledcSetup(0, 5000, 8);      // Channel 0, 5kHz, 8-bit
-    ledcAttachPin(BUZZER_PIN, 0);
-}
-
-void buzzerTone(uint16_t freq) {
-    ledcWriteTone(0, freq);
-}
-
-void buzzerMute() {
-    ledcWriteTone(0, 0);
-}
-```
-
-### Melody Format
-
-```cpp
-const int16_t alarmMelody[] = {
-    NOTE_X, duration,  // Positive duration = normal note
-    NOTE_Y, -duration, // Negative duration = dotted note (1.5x)
-    // ...
-};
-const int alarmTempo = 120;  // BPM
-```
-
-### Playback
-
-```cpp
-void playAlarmTick()
-```
-- Non-blocking melody playback
-- Advances through notes based on timing
-- Loops when complete
-
----
-
-## Heart Rate Algorithm
-
-### Beat Detection
-
-Custom derivative-based peak detection:
-
-```cpp
-hrIrDelta = irValue - hrIrPrev;
-
-// Detect peak: rising->falling transition
-if (hrIrDeltaPrev > 100 && hrIrDelta < -100 && !hrBeatState) {
-    // Beat detected
-    long delta = millis() - hrLastBeat;
-    if (delta > 300 && delta < 1500) {
-        float bpm = 60000.0 / delta;
-        // Store and average
-    }
-}
-```
-
-### Sensor Configuration
-
-```cpp
-heartRateSensor.softReset();
-delay(100);
-heartRateSensor.setup(0x1F, 4, 2, 400, 411, 4096);
-// ledBrightness=31, sampleAvg=4, ledMode=2(Red+IR),
-// sampleRate=400, pulseWidth=411, adcRange=4096
-```
-
----
-
-## TOF Distance Sensor
-
-### Initialization
-
-```cpp
-VL53L0X tofSensor;
-TwoWire* tofBus = NULL;
-
-// Detection and init
-Wire.beginTransmission(VL53L0X_I2C_ADDR);
-if (Wire.endTransmission() == 0) {
-    tofSensor.setBus(&Wire);
-    tofSensor.setTimeout(500);
-    if (tofSensor.init()) {
-        tofBus = &Wire;
-        tofSensor.startContinuous();
-        tofInitialized = true;
-    }
-}
-```
-
-### Reading Distance
-
-```cpp
-tofDistance = tofSensor.readRangeContinuousMillimeters();
-// Returns 8190 when out of range
-// Valid range: ~30mm to ~2000mm
-```
-
-### TOF Counter Algorithm
-
-Uses hysteresis to count objects passing in front of sensor:
-
-```cpp
-// State variables
-bool tofObjectPresent = false;
-uint16_t tofThresholdNear = 200;  // Object detected threshold
-uint16_t tofThresholdFar = 400;   // Object left threshold
-
-// Detection logic
-if (!tofObjectPresent && tofDistance < tofThresholdNear) {
-    tofObjectPresent = true;  // Object entered
-} else if (tofObjectPresent && tofDistance > tofThresholdFar) {
-    tofObjectPresent = false;
-    tofCount++;  // Count when object leaves
-}
-```
-
-### Hardware Note
-
-TOF Hat uses the 8-pin header (same as Encoder Hat). They cannot be used simultaneously. When TOF Hat is detected, encoder-based controls are not available - apps use button-only controls.
-
----
-
-## ENV Pro Sensor (BME688 with BSEC2)
-
-### Overview
-
-The ENV Pro unit contains a BME688 sensor that provides:
-- **IAQ (Indoor Air Quality)** index (0-500)
-- **Temperature** (°C)
-- **Humidity** (%)
-- **Pressure** (hPa)
-- **Gas Resistance** (kOhm)
-
-### BSEC2 Library
-
-The Bosch BSEC2 library provides AI-based gas sensing for IAQ calculations:
-
-```cpp
-#include <bsec2.h>
-
-Bsec2 envProSensor;
-bool envProInitialized = false;
-uint8_t envProI2CAddr = 0;  // Detected address (0x76 or 0x77)
-```
-
-### Initialization
-
-```cpp
-// Detection on both I2C buses at both addresses
-Wire.beginTransmission(BME68X_I2C_ADDR_HIGH);
-if (Wire.endTransmission() == 0) {
-    envProBus = &Wire;
-    envProI2CAddr = BME68X_I2C_ADDR_HIGH;
-}
-
-// BSEC2 initialization with callback
-bsecSensor sensorList[] = {
-    BSEC_OUTPUT_IAQ,
-    BSEC_OUTPUT_RAW_TEMPERATURE,
-    BSEC_OUTPUT_RAW_PRESSURE,
-    BSEC_OUTPUT_RAW_HUMIDITY,
-    BSEC_OUTPUT_RAW_GAS,
-    BSEC_OUTPUT_STABILIZATION_STATUS,
-    BSEC_OUTPUT_RUN_IN_STATUS
-};
-
-if (envProSensor.begin(envProI2CAddr, *envProBus)) {
-    envProSensor.updateSubscription(sensorList, ARRAY_LEN(sensorList), BSEC_SAMPLE_RATE_ULP);
-    envProSensor.attachCallback(envProDataCallback);
-    envProInitialized = true;
-}
-```
-
-### Callback Data Handling
-
-```cpp
-void envProDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
-    for (uint8_t i = 0; i < outputs.nOutputs; i++) {
-        const bsecData output = outputs.output[i];
-        switch (output.sensor_id) {
-            case BSEC_OUTPUT_IAQ:
-                envProIAQ = output.signal;
-                envProIAQAccuracy = output.accuracy;  // 0-3
-                break;
-            case BSEC_OUTPUT_RAW_TEMPERATURE:
-                envProTemperature = output.signal;
-                break;
-            // ... other outputs
-        }
-    }
-}
-```
-
-### IAQ Accuracy Levels
-
-| Accuracy | Meaning |
-|----------|----------|
-| 0 | Sensor stabilizing |
-| 1 | Low accuracy (calibrating) |
-| 2 | Medium accuracy |
-| 3 | High accuracy (fully calibrated) |
-
-Full calibration requires ~24 hours of continuous operation.
-
-### IAQ Index Interpretation
-
-| IAQ Range | Air Quality |
-|-----------|-------------|
-| 0-50 | Excellent |
-| 51-100 | Good |
-| 101-150 | Lightly Polluted |
-| 151-200 | Moderately Polluted |
-| 201-300 | Heavily Polluted |
-| 301-500 | Severely Polluted |
-
-### Air Quality Alarm Mode
-
-The Air Quality app includes an alarm mode that triggers when air quality becomes poor:
-
-```cpp
-// Alarm thresholds
-#define CO2_ALARM_THRESHOLD 1500    // ppm (ASHRAE recommends <1000 for comfort)
-#define IAQ_ALARM_THRESHOLD 150     // IAQ index (moderately polluted)
-
-// Alarm state
-bool airQualityAlarmArmed = false;
-bool airQualityAlarmTriggered = false;
-
-// Trigger logic (in app_air_quality())
-bool airQualityBad = false;
-if (scd4xBus != NULL && co2_value > CO2_ALARM_THRESHOLD) {
-    airQualityBad = true;
-}
-if (envProInitialized && envProIAQAccuracy >= 1 && envProIAQ > IAQ_ALARM_THRESHOLD) {
-    airQualityBad = true;
-}
-```
-
-The alarm:
-- Triggers if **either** CO2 or IAQ exceeds threshold (when respective sensor is connected)
-- Only uses IAQ when accuracy >= 1 (sensor has started calibrating)
-- Automatically stops when air quality improves
-- The alarm uses `triggerAlarm()` for multi-modal alerts (buzzer, LED)
-
-### Wire1 Bus Switching
-
-When ENV Pro is on the Grove port (Wire1), the bus must be temporarily switched for BSEC2 operations:
-
-```cpp
-// In loop(), before envProSensor.run()
-if (envProInitialized && envProBus == &Wire1) {
-    switchWire1ToGrove();
-}
-envProSensor.run();
-if (envProInitialized && envProBus == &Wire1) {
-    switchWire1ToInternal();
-}
-```
-
----
-
-## Sun & Moon App
-
-### Dependencies
-
-```cpp
-#include <sunset.h>  // SunSet library for solar calculations
-```
-
-### Location Configuration
-
-```cpp
-#define BRESCIA_LAT 45.5416
-#define BRESCIA_LON 10.2118
-#define BRESCIA_TZ 1  // UTC+1 (CET)
-```
-
-### Solar Calculations
-
-```cpp
-SunSet sun;
-sun.setPosition(BRESCIA_LAT, BRESCIA_LON, BRESCIA_TZ);
-sun.setCurrentDate(year, month, day);
-
-int sunrise = (int)sun.calcSunrise();       // Minutes from midnight
-int sunset = (int)sun.calcSunset();
-int civilDawn = (int)sun.calcCivilSunrise();
-int civilDusk = (int)sun.calcCivilSunset();
-```
-
-### Moon Phase Algorithm
-
-```cpp
-void getMoonPhase(int year, int month, int day, int* phase, int* illum);
-```
-
-Returns:
-- **phase**: 0-7 (New Moon, Waxing Crescent, First Quarter, Waxing Gibbous, Full Moon, Waning Gibbous, Last Quarter, Waning Crescent)
-- **illum**: 0-100 (illumination percentage)
-
-### Helper Functions
-
-```cpp
-void formatTime(int minutes, char* buf);           // Convert minutes to HH:MM
-void formatSecondsDiff(int seconds, char* buf);    // Format as +/-Xm Xs
-const char* getMoonPhaseName(int phase);           // Get phase name string
-void drawSunIcon(int x, int y);                    // Draw sun graphic
-void drawMoonIcon(int x, int y, int phase);        // Draw moon graphic with phase
-```
-
----
-
-## Home Assistant Integration
-
-### Configuration
-
-```cpp
-#define HA_WIFI_SSID "YOUR_WIFI_SSID"
-#define HA_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-#define HA_IP "192.168.1.100"
-#define HA_PORT 8123
-#define HA_API_TOKEN "YOUR_LONG_LIVED_ACCESS_TOKEN"
-```
-
-### State Machine
-
-```cpp
-enum HAState { 
-    HA_DISCONNECTED,  // WiFi not connected
-    HA_CONNECTING,    // WiFi connection in progress
-    HA_CONNECTED,     // WiFi connected, ready to send
-    HA_SENDING,       // HTTP request in progress
-    HA_SUCCESS,       // Command sent successfully
-    HA_ERROR          // Error occurred
-};
-```
+1. Update M5Dial state
+2. Handle WiFi connection state machine
+3. Handle MQTT connection and reconnection
+4. Check for NTP sync completion
+5. Handle encoder input
+6. Handle touch input
+7. Handle button input
+8. Draw current screen
+9. Push sprite to display
+10. 50ms delay for stability
 
 ### WiFi Connection
 
 ```cpp
-void haConnectWiFi();     // Start WiFi connection (STA mode)
-void haDisconnectWiFi();  // Disconnect and turn off WiFi
+void connectWiFi()
 ```
+- Sets WiFi mode to STA (station)
+- Begins connection with credentials
+- Sets state to CONN_CONNECTING
+- Records start time for timeout
 
-### API Request
+### MQTT Connection
 
 ```cpp
-bool haSendAlarmCommand();
+void connectMqtt()
 ```
+- Connects with client ID "m5dial-ha"
+- Subscribes to alarm state topic
+- Subscribes to all sensor topics
+- Handles connection errors with descriptive messages
 
-Sends HTTP POST to Home Assistant REST API:
-- **Endpoint**: `/api/services/alarm_control_panel/alarm_trigger`
-- **Payload**: `{"entity_id": "alarm_control_panel.alarmo"}`
-- **Auth**: Bearer token in Authorization header
+### MQTT Callback
 
-### Timeouts
-
-| Parameter | Value |
-|-----------|-------|
-| WiFi connect timeout | 15 seconds |
-| HTTP request timeout | 5 seconds |
-| Status display time | 2 seconds |
+```cpp
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+```
+- Parses incoming messages
+- Updates `haAlarmState` for alarm topic
+- Updates `haSensorOpen[]` array for sensor topics
+- Recognizes ON/on/1/true as "open"
 
 ---
 
-## MiniScale Weight Sensor
+## Input Handling
 
-### Initialization
-
-```cpp
-UNIT_SCALES scales;
-TwoWire* scalesBus = NULL;
-
-// Detection and init
-Wire.beginTransmission(MINISCALE_I2C_ADDR);
-if (Wire.endTransmission() == 0) {
-    if (scales.begin(&Wire, SDA_PIN, SCL_PIN, MINISCALE_I2C_ADDR)) {
-        scalesBus = &Wire;
-        scalesInitialized = true;
-        scales.setLEDColor(0x001000);  // Green LED
-    }
-}
-```
-
-### Reading Weight
+### Button Handler
 
 ```cpp
-float weight = scales.getWeight();      // Weight in grams
-int32_t rawADC = scales.getRawADC();    // Raw ADC value
-float gap = scales.getGapValue();       // Calibration factor
+void handleButton()
 ```
+- Tracks press duration for long-press detection
+- Short press: screen-specific action
+- Long press: toggle between Settings and Main
 
-### Tare and Calibration
+### Encoder Handler
 
 ```cpp
-// Tare (zero the scale)
-scales.setOffset();
-
-// Adjust calibration factor
-scales.setGapValue(newGapValue);
+void handleEncoder()
 ```
+- Reads encoder delta from last value
+- Accumulates steps (requires 2 for action)
+- Plays click sound on action
+- Routes to screen-specific handler
 
-### LED Control
+### Touch Handler
 
 ```cpp
-scales.setLEDColor(0x001000);  // Green
-scales.setLEDColor(0x100000);  // Red
-scales.setLEDColor(0x000010);  // Blue
+void handleTouch()
 ```
+- Checks for `wasPressed()` event
+- On keypad: detects CLR, OK, and number key touches
+- On main: arms directly or goes to keypad for disarm
+- On sensors: returns to main
+
+### Keypad Selection
+
+```cpp
+void handleKeypadSelect()
+```
+- 'C': Clears entered code
+- '>': Submits code
+- '0'-'9': Appends digit to code
 
 ---
 
-## Multi-Modal Alert System
+## Screen Rendering
 
-### Components
-
-The alert system triggers two simultaneous feedback methods:
+### Main Screen
 
 ```cpp
-void triggerAlarm() {
-    playAlarmTick();      // Buzzer melody
-    // LED flash (toggled every 200ms)
-}
+void drawMainScreen()
 ```
+- Draws circular menu labels using `drawTextOnArc()`
+- Draws status bar (WiFi icon, time, MQTT label)
+- Draws alarm state circle with color coding
+- Shows sensor summary (open count)
 
-### Internal LED
+### Keypad Screen
 
 ```cpp
-#define LED_PIN 10  // Active LOW
-
-void ledInit() {
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH);  // OFF
-}
-
-void ledOn()  { digitalWrite(LED_PIN, LOW); }
-void ledOff() { digitalWrite(LED_PIN, HIGH); }
+void drawKeypadScreen()
 ```
+- Draws status bar
+- Shows "ENTER CODE" or masked code
+- Draws CLR and OK buttons on sides
+- Draws 3x3+1 number grid with selection highlight
 
-### Alert Timing
+### Sensors Screen
 
-| Parameter | Value |
-|-----------|-------|
-| LED flash interval | 200ms |
+```cpp
+void drawSensorsScreen()
+```
+- Draws status bar
+- Shows "SENSORS" title
+- Two-column layout for sensor list
+- Color-coded status dots (green/red)
+
+### Settings Screen
+
+```cpp
+void drawSettingsScreen()
+```
+- Draws status bar
+- Shows "SETTINGS" title
+- Lists editable fields with highlight
+- Shows edit mode indicator (green vs orange)
 
 ---
 
-## Flash Storage
+## Helper Functions
 
-### Preferences API
+### Status Bar
 
 ```cpp
-Preferences prefs;
-prefs.begin("tricorder", false);
-
-// Save
-prefs.putBytes("co2_hist", co2_history, sizeof(co2_history));
-
-// Load
-prefs.getBytes("co2_hist", co2_history, sizeof(co2_history));
-
-prefs.end();
+void drawStatusBar()
 ```
+- Draws WiFi icon at left (white/gray based on connection)
+- Draws time at center
+- Draws MQTT label at right (white/red based on connection)
 
-### Stored Data
+### WiFi Icon
 
-- CO2 history array
-- Temperature history array
-- Humidity history array
-- History index and count
-- Min/max values with timestamps
+```cpp
+void drawWifiIcon(int x, int y, bool connected)
+```
+- Draws SVG-style wireless signal arcs
+- Small dot at bottom (transmitter)
+- Three concentric arcs above
+
+### Arc Text
+
+```cpp
+void drawTextOnArc(const char* text, float centerAngleDeg, int radius, 
+                   uint16_t color, bool highlight, bool clockwise)
+```
+- Draws text along circular arc
+- Supports clockwise and anticlockwise directions
+- Draws orange highlight arc behind selected text
+
+---
+
+## RTC Management
+
+### Compile Time Initialization
+
+```cpp
+void setRtcFromCompileTime()
+```
+- Parses `__DATE__` and `__TIME__` macros
+- Only sets RTC if year < 2024 (indicates unset)
+- Logs action to serial
+
+### NTP Synchronization
+
+```cpp
+void syncRtcFromNtp()
+```
+- Checks if NTP time is valid (after 2020)
+- Adds UTC+1 offset for CET timezone
+- Updates RTC with NTP time
+- Sets `ntpSynced` flag
+
+### Settings Adjustment
+
+```cpp
+void adjustSettingsField(int direction)
+```
+- Gets current RTC datetime
+- Adjusts selected field with wraparound
+- Constrains year to 2020-2099
+- Updates RTC immediately
+
+---
+
+## MQTT Commands
+
+### Alarm Toggle
+
+```cpp
+void toggleAlarm()
+```
+- Checks current alarm state
+- Publishes ARM_AWAY or DISARM to command topic
+
+### Code Submission
+
+```cpp
+void submitCode()
+```
+- Determines command based on current state
+- Publishes command to MQTT
+- Clears code and returns to main screen
 
 ---
 
@@ -718,42 +393,42 @@ prefs.end();
 
 ### Screen Dimensions
 
-- Width: 135 pixels
+- Width: 240 pixels
 - Height: 240 pixels
-- Orientation: Portrait (rotation 1)
+- Shape: Round (GC9A01 display)
+- Orientation: 0 (default)
 
-### Standard Layout
+### Main Screen Layout
 
 ```
-┌─────────────────────┐
-│ Header (0-14)       │  Date, time, battery
-├─────────────────────┤
-│ Title (20)          │  App name
-│                     │
-│ Main Content        │  Sensor readings
-│ (40-90)             │
-│                     │
-│ Graph Area          │  History visualization
-│ (95-155)            │
-│                     │
-│ Controls Hint       │  Button instructions
-│ (180)               │
-└─────────────────────┘
+        ┌─────────────┐
+       /   KEYPAD     \
+      /                \
+     │  WiFi  12:34 MQTT│
+     │                  │
+     │    ┌────────┐    │
+SETTINGS │  ARMED  │ SENSORS
+     │    └────────┘    │
+     │   All closed     │
+      \                /
+       \              /
+        └─────────────┘
 ```
 
-### Color Palette
+### Keypad Layout
 
-```cpp
-BLACK   0x0000
-WHITE   0xFFFF
-RED     0xF800
-GREEN   0x07E0
-BLUE    0x001F
-CYAN    0x07FF
-YELLOW  0xFFE0
-ORANGE  0xFD20
-0x7BEF  // Gray-blue (hints, labels)
-0x4208  // Dark gray (disabled)
+```
+┌─────────────────────────┐
+│   WiFi  12:34  MQTT     │
+│                         │
+│      ENTER CODE         │
+│        ****             │
+│                         │
+│  C  │ 1 │ 2 │ 3 │  O    │
+│  L  │ 4 │ 5 │ 6 │  K    │
+│  R  │ 7 │ 8 │ 9 │       │
+│     │   │ 0 │   │       │
+└─────────────────────────┘
 ```
 
 ---
@@ -762,39 +437,58 @@ ORANGE  0xFD20
 
 | Component | RAM (bytes) |
 |-----------|-------------|
-| CO2 History | 288 |
-| Temp History | 288 |
-| Humidity History | 144 |
-| HR History | 144 |
-| Display Sprite | ~64KB |
-| **Total Global** | ~48KB |
+| Display Sprite | ~115KB (240x240x2) |
+| MQTT Buffer | 512 |
+| Sensor Arrays | ~200 |
+| Code Buffer | 9 |
+| **Total Estimate** | ~120KB |
 
-Flash usage: ~1MB (33% of 3MB)
+Flash usage: Minimal (single .ino file)
 
 ---
 
-## Adding New Apps
+## Customization
 
-1. Add to `AppID` enum
-2. Add name to `appNames[]`
-3. Add `false` to `appEnabled[]`
-4. Add I2C address constant (if sensor)
-5. Add sensor object and state variables
-6. Implement `app_newapp()` function
-7. Add case to `renderCurrentApp()`
-8. Add input handling in `handleAppInput()`
-9. Add detection logic in `setup()`
+### Adding Sensors
+
+1. Increase `HA_SENSOR_COUNT`
+2. Add topic to `haSensorTopics[]`
+3. Add display name to `haSensorNames[]`
+4. Array `haSensorOpen[]` auto-expands
+
+### Changing Timezone
+
+In `syncRtcFromNtp()`:
+```cpp
+now += 3600;  // Change offset in seconds
+```
+
+### Changing MQTT Topics
+
+Edit defines at top of file:
+```cpp
+#define HA_MQTT_COMMAND_TOPIC "your/topic/set"
+#define HA_MQTT_STATE_TOPIC "your/topic/state"
+```
+
+### Adding Menu Items
+
+1. Increase `MENU_COUNT`
+2. Add name to `menuNames[]`
+3. Add screen to `menuScreens[]`
+4. Add new `AppScreen` enum value
+5. Implement `drawNewScreen()` function
+6. Add case to main loop switch
 
 ---
 
 ## Known Limitations
 
-- Heart rate history not persisted to flash
-- IR receiver requires external module on GPIO 36
-- PIR sensor uses GPIO 33 which conflicts with Grove I2C SCL (auto-disabled when Grove I2C is used)
-- TOF Hat and Encoder Hat cannot be used simultaneously (same port)
+- Timezone is hardcoded to UTC+1 (CET)
+- Sensor list is hardcoded (requires recompile to change)
 - No deep sleep implementation
-- WiFi only used for initial NTP sync
+- No persistent storage of alarm state
+- Code is sent but not validated locally
 
 ---
 
@@ -803,13 +497,14 @@ Flash usage: ~1MB (33% of 3MB)
 Baud rate: 115200
 
 Key messages:
-- `"M5StickCPlus initializing...OK"`
-- `"Detecting connected sensors..."`
-- `"  CO2 sensor (SCD4x) detected on Wire1 (Grove) at 0x62"`
-- `"  ENV Pro (BME688) detected on Wire1 (Grove) at 0x77"`
-- `"ENV Pro (BSEC2) initialized successfully"`
-- `"BSEC library version X.X.X.X"`
-- `"  Heart Rate sensor (MAX30102) detected at 0x57"`
-- `"  TOF sensor (VL53L0X) detected on Wire (Qwiic) at 0x29"`
-- `"Starting with app: [name]"`
-- `"HR sensor initialized"`
+- `"M5Dial Home Assistant Controller"` - Startup
+- `"Connecting to WiFi: <SSID>"` - WiFi attempt
+- `"WiFi connected!"` - WiFi success
+- `"IP: <address>"` - IP assignment
+- `"Connecting to MQTT: <server>:<port>"` - MQTT attempt
+- `"MQTT connected!"` - MQTT success
+- `"MQTT failed, rc=<code>"` - MQTT error
+- `"MQTT [<topic>]: <message>"` - Incoming message
+- `"Sent: <command>"` - Outgoing command
+- `"RTC set from compile time: <datetime>"` - RTC init
+- `"RTC synced from NTP: <datetime>"` - NTP sync
