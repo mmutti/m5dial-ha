@@ -1,0 +1,8 @@
+# Credentials - DO NOT COMMIT
+credentials.h
+
+# Build artifacts
+build/
+*.o
+*.elf
+*.bin
