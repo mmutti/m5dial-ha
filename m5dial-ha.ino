@@ -394,16 +394,17 @@ void handleButton() {
     
     // Handle button actions based on screen
     if (btnLongPress) {
-        // Long press: go to settings from any screen, or back to main from settings
-        if (currentScreen == SCREEN_SETTINGS) {
+        // Long press on main: reboot the unit
+        // Long press on any other screen: return to main
+        if (currentScreen == SCREEN_MAIN) {
+            M5Dial.Speaker.tone(1000, 100);
+            delay(200);
+            ESP.restart();
+        } else {
             currentScreen = SCREEN_MAIN;
             settingsEditing = false;
-        } else {
-            currentScreen = SCREEN_SETTINGS;
-            settingsField = SET_HOUR;
-            settingsEditing = false;
+            M5Dial.Speaker.tone(1000, 50);
         }
-        M5Dial.Speaker.tone(1000, 50);
     }
     
     if (btnShortPress) {
